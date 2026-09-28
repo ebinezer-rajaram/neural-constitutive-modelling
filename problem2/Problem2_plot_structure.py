@@ -1,6 +1,6 @@
 """
 Problem 2 (b) — Eiffel Tower: Plot Original and Deformed Structures
-Cambridge IIB Engineering — Module 4C11, Coursework 1
+Cambridge IIB Engineering — Module 4C11
 
 Loads two samples from Eiffel_data.mat, re-solves the finite element problem
 (2D truss) for each sample's load profile, and plots:

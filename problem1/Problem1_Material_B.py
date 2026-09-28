@@ -1,6 +1,6 @@
 """
 Problem 1 — Material B: Neural Constitutive Model (Full 3D)
-Cambridge IIB Engineering — Module 4C11, Coursework 1
+Cambridge IIB Engineering — Module 4C11
 
 Trains a feedforward ResNet to learn the constitutive law for Material B.
 Material B is a full 3D material with all 6 independent stress/strain components active:
