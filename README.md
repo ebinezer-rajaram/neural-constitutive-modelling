@@ -30,7 +30,7 @@ Engineering design needs two things from a material model: an accurate stress–
 | C | uniaxial | 0.506 Pa | 1.07 Pa | Path-dependent plasticity: open loops, residual stress, cyclic hardening/softening, ratcheting |
 
 - The network recovers the plane-strain out-of-plane reaction $\sigma_{33} \neq 0$ and predicts $\sigma_{23}, \sigma_{13}$ at ~10⁻¹³ Pa (numerically zero) without being told the symmetry.
-- **Negative result, stated plainly.** For the plastic Material C, the train–test gap is about 1.5 orders of magnitude, and neither width, learning rate nor weight decay closes it. A feedforward path-to-path map lacks the inductive bias for evolving internal variables. That motivates the recurrent approach in [recurrent-neural-operator](https://github.com/ebinezer-rajaram/recurrent-neural-operator).
+- **Negative result, stated plainly.** For the plastic Material C, the train–test gap is about 1.5 orders of magnitude, and neither width, learning rate nor weight decay closes it. A feedforward path-to-path map lacks the inductive bias for evolving internal variables. That motivates the recurrent approach in [recurrent-operator-viscoplasticity](https://github.com/ebinezer-rajaram/recurrent-operator-viscoplasticity).
 
 **Structural certification (1,000 FE samples, 800/200 split).**
 
