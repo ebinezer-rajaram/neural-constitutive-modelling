@@ -1,6 +1,5 @@
 """
-Problem 2 — Eiffel Tower Structural Certification: U-Net-style Classifier
-Cambridge IIB Engineering — Module 4C11
+Eiffel Tower Structural Certification: Fully Connected Neural Network
 
 Binary classification task: predict whether the Eiffel Tower truss structure
 survives (output=1) or fails (output=0) under a given distributed pressure loading.
@@ -9,27 +8,9 @@ Failure criterion: max element stress exceeds 500 MPa (yield_stress = 5e8 Pa).
 
 Network maps: load_apply [nSamples × 20] → survival probability [nSamples × 1]
 
-Architecture: U-Net-style encoder-decoder adapted to 1D fully connected layers.
-    The encoder progressively compresses the input, creating a bottleneck
-    representation. The decoder expands it back, with skip connections
-    concatenating matching encoder features at each level. This allows the
-    decoder to recover fine-grained information that would otherwise be lost
-    during compression.
-
-    Encoder:
-        enc1: Linear(20  → 256) + BN + ReLU  → h1 [256]
-        enc2: Linear(256 → 128) + BN + ReLU  → h2 [128]
-        enc3: Linear(128 → 64)  + BN + ReLU  → h3 [64]
-        enc4: Linear(64  → 32)  + BN + ReLU  → h4 [32]  [bottleneck]
-
-    Decoder (skip = concat encoder output at matching level):
-        dec4: Linear(32+64   → 64)  + BN + ReLU  [concat h4 + h3]
-        dec3: Linear(64+128  → 128) + BN + ReLU  [concat dec4_out + h2]
-        dec2: Linear(128+256 → 256) + BN + ReLU  [concat dec3_out + h1]
-
-    Classifier head:
-        Linear(256 → 128) + ReLU
-        Linear(128 → 1)            [raw logit]
+Architecture: fully connected network with BatchNorm + Dropout regularisation
+    Input(20) → FC(512)+BN+ReLU+Drop → FC(256)+BN+ReLU+Drop
+              → FC(128)+BN+ReLU+Drop → FC(64)+BN+ReLU+Drop → FC(1)
 """
 
 import matplotlib
@@ -44,9 +25,11 @@ import h5py
 import os
 
 # Hyperparameters (all in one place for easy adjustment)
-EPOCHS      = 200          # Training epochs
+EPOCHS      = 200          # Sufficient for convergence on classification task
 BATCH_SIZE  = 32           # Mini-batch size
 LR          = 1e-3         # Adam learning rate
+HIDDEN_DIMS = [512, 256, 128, 64]  # Hidden layer widths
+DROPOUT     = 0.3          # Dropout probability for regularisation
 NTRAIN_FRAC = 0.8          # 80% training, 20% test
 SEED        = 42
 
@@ -72,14 +55,14 @@ class MatRead:
         # Transpose to restore (nSamples, 20)
         raw = np.array(self.data['load_apply'])
         if raw.ndim == 2 and raw.shape[0] < raw.shape[1]:
-            raw = raw.T
+            raw = raw.T   # Transpose: (20, nSamples) → (nSamples, 20)
         return torch.tensor(raw, dtype=torch.float32)
 
     def get_labels(self):
         # MATLAB shape: (nSamples, 1) → h5py reads as (1, nSamples)
         raw = np.array(self.data['result'])
         if raw.ndim == 2 and raw.shape[0] < raw.shape[1]:
-            raw = raw.T
+            raw = raw.T   # (1, nSamples) → (nSamples, 1)
         return torch.tensor(raw, dtype=torch.float32)
 
 
@@ -91,6 +74,7 @@ class DataNormalizer:
     def __init__(self, data):
         self.mean = data.mean(dim=0, keepdim=True)   # shape [1, 20]
         self.std  = data.std(dim=0, keepdim=True)
+        # Clamp to avoid division by zero for constant features
         self.std  = torch.clamp(self.std, min=1e-8)
 
     def encode(self, data):
@@ -102,65 +86,34 @@ class DataNormalizer:
         return data * self.std + self.mean
 
 
-def enc_block(in_dim, out_dim):
-    """Single encoder stage: Linear → BatchNorm → ReLU."""
-    return nn.Sequential(
-        nn.Linear(in_dim, out_dim),
-        nn.BatchNorm1d(out_dim),
-        nn.ReLU()
-    )
-
-
-class UNet_Classifier(nn.Module):
+class FCNN(nn.Module):
     """
-    U-Net-style binary classifier adapted to 1D fully connected layers.
+    Fully connected classifier with BatchNorm and Dropout regularisation.
 
-    Encoder path compresses the input through four stages, saving feature
-    maps (h1–h4) at each level. The decoder expands the bottleneck representation,
-    concatenating the matching encoder feature map at each stage (skip connections).
-    Skip connections preserve spatial/feature detail lost during compression and
-    give the classifier access to both high-level (compressed) and low-level
-    (detailed) representations simultaneously.
+    Architecture per hidden layer:
+        Linear → BatchNorm → ReLU → Dropout(0.3)
+
+    Final layer outputs a raw logit (no sigmoid activation).
+    BCEWithLogitsLoss applies sigmoid internally for numerical stability.
 
     Input:  normalised load profile, shape [batch, 20]
-    Output: raw logit, shape [batch, 1]
+    Output: raw logit for survival probability, shape [batch, 1]
     """
-    def __init__(self, input_dim):
+    def __init__(self, input_dim, hidden_dims, dropout):
         super().__init__()
-
-        # Encoder
-        self.enc1 = enc_block(input_dim, 256)   # 20  → 256, saves h1
-        self.enc2 = enc_block(256, 128)          # 256 → 128, saves h2
-        self.enc3 = enc_block(128, 64)           # 128 → 64,  saves h3
-        self.enc4 = enc_block(64, 32)            # 64  → 32   [bottleneck, h4]
-
-        # Decoder
-        # Each decoder stage concatenates the bottleneck/previous decoder output
-        # with the matching encoder skip feature, doubling the input dimension.
-        self.dec4 = enc_block(32 + 64, 64)      # concat(h4[32], h3[64]) → 64
-        self.dec3 = enc_block(64 + 128, 128)    # concat(dec4[64], h2[128]) → 128
-        self.dec2 = enc_block(128 + 256, 256)   # concat(dec3[128], h1[256]) → 256
-
-        # Classifier head
-        self.head = nn.Sequential(
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 1)    # Raw logit output
-        )
+        layers = []
+        in_dim = input_dim
+        for h_dim in hidden_dims:
+            layers.append(nn.Linear(in_dim, h_dim))
+            layers.append(nn.BatchNorm1d(h_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+            in_dim = h_dim
+        layers.append(nn.Linear(in_dim, 1))   # Final logit output
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x):
-        # Encoder — save intermediate features for skip connections
-        h1 = self.enc1(x)    # [batch, 256]
-        h2 = self.enc2(h1)   # [batch, 128]
-        h3 = self.enc3(h2)   # [batch, 64]
-        h4 = self.enc4(h3)   # [batch, 32]  ← bottleneck
-
-        # Decoder — concatenate skip connections from encoder
-        d4 = self.dec4(torch.cat([h4, h3], dim=1))   # concat(32+64) → 64
-        d3 = self.dec3(torch.cat([d4, h2], dim=1))   # concat(64+128) → 128
-        d2 = self.dec2(torch.cat([d3, h1], dim=1))   # concat(128+256) → 256
-
-        return self.head(d2)   # Final classification logit
+        return self.net(x)
 
 
 # Data processing
@@ -169,19 +122,19 @@ data_reader = MatRead(data_path)
 loads       = data_reader.get_loads()    # [nSamples, 20]
 labels      = data_reader.get_labels()  # [nSamples, 1]
 
-nsamples  = loads.shape[0]
+nsamples = loads.shape[0]
 input_dim = loads.shape[1]
-ntrain    = int(nsamples * NTRAIN_FRAC)
-ntest     = nsamples - ntrain
+ntrain   = int(nsamples * NTRAIN_FRAC)
+ntest    = nsamples - ntrain
 
 print(f"\nDataset: {nsamples} samples, input_dim={input_dim}")
 print(f"Train: {ntrain}, Test: {ntest}")
 
-# Sequential split
-train_loads  = loads[:ntrain]
-test_loads   = loads[ntrain:]
-train_labels = labels[:ntrain]
-test_labels  = labels[ntrain:]
+# Train / test split (sequential — data assumed to be randomly ordered already)
+train_loads  = loads[:ntrain]     # [ntrain, 20]
+test_loads   = loads[ntrain:]     # [ntest,  20]
+train_labels = labels[:ntrain]    # [ntrain, 1]
+test_labels  = labels[ntrain:]    # [ntest,  1]
 
 # Class imbalance check
 n_pos = train_labels.sum().item()
@@ -190,6 +143,7 @@ ratio = n_pos / max(n_neg, 1)
 print(f"\nClass distribution (train): {int(n_pos)} survive, {int(n_neg)} fail — ratio {ratio:.3f}")
 
 if ratio < 0.3 or ratio > 3.0:
+    # Imbalanced: weight the minority class
     pos_weight = torch.tensor([n_neg / max(n_pos, 1)], dtype=torch.float32)
     print(f"Imbalanced dataset detected — using BCEWithLogitsLoss with pos_weight={pos_weight.item():.3f}")
 else:
@@ -198,10 +152,10 @@ else:
 
 criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-# Normalise inputs (fit on training data only)
-load_normalizer  = DataNormalizer(train_loads)
-train_loads_enc  = load_normalizer.encode(train_loads)
-test_loads_enc   = load_normalizer.encode(test_loads)
+# Normalise inputs — fit on training data only
+load_normalizer   = DataNormalizer(train_loads)
+train_loads_enc   = load_normalizer.encode(train_loads)
+test_loads_enc    = load_normalizer.encode(test_loads)
 
 # DataLoader for mini-batch training
 train_set    = Data.TensorDataset(train_loads_enc, train_labels)
@@ -209,12 +163,13 @@ train_loader = Data.DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
 
 
 # Model, optimiser, scheduler
-net       = UNet_Classifier(input_dim)
+net       = FCNN(input_dim, HIDDEN_DIMS, DROPOUT)
 optimizer = torch.optim.Adam(net.parameters(), lr=LR)
+# CosineAnnealingLR gradually reduces LR to near-zero over T_max epochs
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
 n_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
-print(f"\nU-Net Classifier — Number of trainable parameters: {n_params:,}")
+print(f"\nFCNN — Number of trainable parameters: {n_params:,}")
 
 
 # Training loop
@@ -228,17 +183,18 @@ for epoch in range(EPOCHS):
     trainloss = 0.0
 
     for load_batch, label_batch in train_loader:
-        logits = net(load_batch)                  # Forward pass → raw logit
-        loss   = criterion(logits, label_batch)   # BCE loss
+        logits = net(load_batch)                      # Forward pass → raw logit
+        loss   = criterion(logits, label_batch)       # BCE loss with sigmoid
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        optimizer.zero_grad()   # Clear accumulated gradients
+        loss.backward()         # Backpropagate
+        optimizer.step()        # Update weights
 
         trainloss += loss.item()
 
-    scheduler.step()
+    scheduler.step()   # Decay learning rate
 
+    # Evaluate on test set (no gradients)
     net.eval()
     with torch.no_grad():
         test_logits = net(test_loads_enc)
@@ -260,9 +216,10 @@ print(f'Final test  loss: {loss_test_list[-1]:.6f}')
 net.eval()
 with torch.no_grad():
     test_logits = net(test_loads_enc)
-    test_probs  = torch.sigmoid(test_logits)
-    test_preds  = (test_probs >= 0.5).float()
+    test_probs  = torch.sigmoid(test_logits)          # Convert logit → probability
+    test_preds  = (test_probs >= 0.5).float()         # Threshold at 0.5
 
+# Accuracy, precision, recall (computed manually to avoid extra dependency)
 tp = ((test_preds == 1) & (test_labels == 1)).sum().item()
 tn = ((test_preds == 0) & (test_labels == 0)).sum().item()
 fp = ((test_preds == 1) & (test_labels == 0)).sum().item()
@@ -285,20 +242,19 @@ plt.plot(loss_train_list, label='Train loss', color='steelblue')
 plt.plot(loss_test_list,  label='Test loss',  color='tomato', linestyle='--')
 plt.xlabel('Epoch')
 plt.ylabel('BCE Loss')
-plt.title('Problem 2 U-Net — Training and Test Loss vs Epochs')
+plt.title('FCNN — Training and Test Loss vs Epochs')
 plt.legend()
 plt.tight_layout()
-plt.savefig('outputs/Problem2_UNet_loss.png', dpi=150)
-print('\nSaved: outputs/Problem2_UNet_loss.png')
+plt.savefig('outputs/fcnn_loss.png', dpi=150)
+print('\nSaved: outputs/fcnn_loss.png')
 
 
 # Summary
 print("\n" + "="*60)
-print("SUMMARY — Problem 2: U-Net Classifier")
+print("SUMMARY — FCNN")
 print("="*60)
-print(f"Architecture : U-Net-style (encoder-decoder with skip connections)")
-print(f"Encoder dims : 20 → 256 → 128 → 64 → 32 (bottleneck)")
-print(f"Decoder dims : 32+64→64 → 64+128→128 → 128+256→256")
+print(f"Architecture : Fully Connected Neural Network")
+print(f"Hidden dims  : {HIDDEN_DIMS}")
 print(f"Parameters   : {n_params:,}")
 print(f"Test Accuracy: {accuracy * 100:.2f}%")
 print(f"Precision    : {precision * 100:.2f}%")

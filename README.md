@@ -2,12 +2,6 @@
 
 Deep networks that learn unknown materials' stress–strain laws from loading data, then act as virtual test rigs to identify each material's physics. A companion classifier certifies an Eiffel Tower truss against failure with **97.5 % accuracy and zero unsafe designs passed**.
 
-![Python](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)
-![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white)
-![MATLAB](https://img.shields.io/badge/MATLAB-FE%20data%20generation-0076A8)
-![University of Cambridge · 4C11](https://img.shields.io/badge/University_of_Cambridge-4C11-A3C1AD)
-![License: MIT](https://img.shields.io/badge/License-MIT-green)
-
 ![Eiffel Tower truss: surviving vs failing load case](assets/eiffel_survive_vs_fail.png)
 <sub>Two finite-element load cases from the certification dataset: original (black) and deformed (red dashed) truss. Left: the tower survives. Right: a strut exceeds the 500 MPa failure strength.</sub>
 
@@ -65,32 +59,32 @@ Ground-truth labels come from a 2D truss FE model (direct stiffness method) with
 
 ```
 neural-constitutive-modelling/
-├── problem1/                       # constitutive learning
-│   ├── Problem1_Material_{A,B,C}.py  # train + evaluate one material each
+├── constitutive/                   # constitutive learning
+│   ├── train_material_{a,b,c}.py     # train + evaluate one material each
 │   ├── hyperparam_sweep.py           # width / lr / weight-decay sensitivity
 │   ├── probing_experiments.py        # virtual experiments on trained networks
 │   ├── nn_skeleton.py                # module-provided starter code
 │   └── data/Material_{A,B,C}.mat     # 1100 paths x {6|1} components x 50 steps
-└── problem2/                       # structural certification
-    ├── Problem2_{FCNN,Res_net,U_net}.py
-    ├── Problem2_plot_structure.py    # Python FE re-solve + deformed-shape plots
+└── certification/                  # structural certification
+    ├── classifier_{fcnn,resnet,unet}.py  # survive/fail classifiers
+    ├── plot_structures.py            # Python FE re-solve + deformed-shape plots
     ├── data/Eiffel_data.mat          # 1000 load profiles + survive/fail labels
     └── matlab/                       # FE data generator (GenData_Eiffel.m, ...)
 ```
 
 ## Reproducing
 
-Scripts use paths relative to their own folder and write figures to `outputs/`.
+Scripts use paths relative to their own folder and write figures to `outputs/`. The metrics above are from the original runs; on a different PyTorch build the certification classifiers can differ by a test sample (the FCNN re-run on PyTorch 2.14 CPU gave 96.5% accuracy).
 
 ```bash
-cd problem1
-python Problem1_Material_A.py     # likewise _B, _C
+cd constitutive
+python train_material_a.py        # likewise _b, _c
 python hyperparam_sweep.py
 python probing_experiments.py     # retrains A, B, C, then probes them
 
-cd ../problem2
-python Problem2_FCNN.py           # likewise Problem2_Res_net.py, Problem2_U_net.py
-python Problem2_plot_structure.py
+cd ../certification
+python classifier_fcnn.py         # likewise classifier_resnet.py, classifier_unet.py
+python plot_structures.py
 ```
 
 Dependencies: `torch numpy h5py matplotlib` (for example `uv run --with torch --with numpy --with h5py --with matplotlib python ...`). MATLAB is only needed to regenerate `Eiffel_data.mat` via `matlab/GenData_Eiffel.m`.
@@ -99,6 +93,10 @@ Dependencies: `torch numpy h5py matplotlib` (for example `uv run --with torch --
 
 Python · PyTorch · NumPy · h5py (MATLAB v7.3 I/O) · Matplotlib · MATLAB (finite-element data generation)
 
-## Context
+## Acknowledgements
 
-Developed for **4C11: Data-Driven and Learning-Based Methods in Mechanics and Materials** (Lent 2026), MEng Information and Computer Engineering, University of Cambridge. It was framed as a study of how far generic deep networks can go as constitutive models and as surrogate certifiers for structural design, and of where their inductive bias breaks down.
+Originally developed for 4C11 Data-Driven and Learning-Based Methods in Mechanics and Materials, Department of Engineering, University of Cambridge, which provided the datasets, the MATLAB truss generator and starter code (`nn_skeleton.py`).
+
+## Licence
+
+[MIT](LICENSE)

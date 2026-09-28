@@ -1,6 +1,5 @@
 """
-Problem 1 — Material A: Neural Constitutive Model (Plane Strain)
-Cambridge IIB Engineering — Module 4C11
+Material A: Neural Constitutive Model (Plane Strain)
 
 Trains a feedforward ResNet to learn the constitutive law for Material A.
 Material A is a plane-strain material:

@@ -1,6 +1,5 @@
 """
-Problem 2 — Eiffel Tower Structural Certification: ResNet-style Classifier
-Cambridge IIB Engineering — Module 4C11
+Eiffel Tower Structural Certification: U-Net-style Classifier
 
 Binary classification task: predict whether the Eiffel Tower truss structure
 survives (output=1) or fails (output=0) under a given distributed pressure loading.
@@ -9,14 +8,27 @@ Failure criterion: max element stress exceeds 500 MPa (yield_stress = 5e8 Pa).
 
 Network maps: load_apply [nSamples × 20] → survival probability [nSamples × 1]
 
-Architecture: ResNet-style fully connected network with residual skip connections.
-    Skip connections allow the network to learn residual corrections rather than
-    the full mapping, improving gradient flow through deeper networks.
+Architecture: U-Net-style encoder-decoder adapted to 1D fully connected layers.
+    The encoder progressively compresses the input, creating a bottleneck
+    representation. The decoder expands it back, with skip connections
+    concatenating matching encoder features at each level. This allows the
+    decoder to recover fine-grained information that would otherwise be lost
+    during compression.
 
-    Input(20) → Linear(256)
-              → ResBlock(256) × 3   [each: Linear→BN→ReLU→Linear→BN + skip → ReLU]
-              → Linear(128) + ReLU
-              → Linear(1)           [raw logit]
+    Encoder:
+        enc1: Linear(20  → 256) + BN + ReLU  → h1 [256]
+        enc2: Linear(256 → 128) + BN + ReLU  → h2 [128]
+        enc3: Linear(128 → 64)  + BN + ReLU  → h3 [64]
+        enc4: Linear(64  → 32)  + BN + ReLU  → h4 [32]  [bottleneck]
+
+    Decoder (skip = concat encoder output at matching level):
+        dec4: Linear(32+64   → 64)  + BN + ReLU  [concat h4 + h3]
+        dec3: Linear(64+128  → 128) + BN + ReLU  [concat dec4_out + h2]
+        dec2: Linear(128+256 → 256) + BN + ReLU  [concat dec3_out + h1]
+
+    Classifier head:
+        Linear(256 → 128) + ReLU
+        Linear(128 → 1)            [raw logit]
 """
 
 import matplotlib
@@ -34,8 +46,6 @@ import os
 EPOCHS      = 200          # Training epochs
 BATCH_SIZE  = 32           # Mini-batch size
 LR          = 1e-3         # Adam learning rate
-HIDDEN_DIM  = 256          # Width of residual blocks
-N_BLOCKS    = 3            # Number of residual blocks
 NTRAIN_FRAC = 0.8          # 80% training, 20% test
 SEED        = 42
 
@@ -91,69 +101,65 @@ class DataNormalizer:
         return data * self.std + self.mean
 
 
-class ResBlock(nn.Module):
+def enc_block(in_dim, out_dim):
+    """Single encoder stage: Linear → BatchNorm → ReLU."""
+    return nn.Sequential(
+        nn.Linear(in_dim, out_dim),
+        nn.BatchNorm1d(out_dim),
+        nn.ReLU()
+    )
+
+
+class UNet_Classifier(nn.Module):
     """
-    Residual block for fully connected layers.
+    U-Net-style binary classifier adapted to 1D fully connected layers.
 
-    Structure:
-        Linear(size → size) → BatchNorm → ReLU
-        Linear(size → size) → BatchNorm
-        + skip connection (identity, since dimensions are equal)
-        → ReLU
-
-    BatchNorm stabilises training by reducing internal covariate shift.
-    The skip connection adds the input directly to the output, allowing
-    the block to learn corrections (residuals) to the identity mapping.
-    """
-    def __init__(self, size):
-        super().__init__()
-        self.fc1 = nn.Linear(size, size)
-        self.bn1 = nn.BatchNorm1d(size)
-        self.fc2 = nn.Linear(size, size)
-        self.bn2 = nn.BatchNorm1d(size)
-
-    def forward(self, x):
-        residual = x                         # Save input for skip connection
-        out = F.relu(self.bn1(self.fc1(x)))  # First linear + BN + ReLU
-        out = self.bn2(self.fc2(out))        # Second linear + BN (no activation yet)
-        return F.relu(out + residual)        # Add skip connection, then activate
-
-
-class ResNet_Classifier(nn.Module):
-    """
-    ResNet-style binary classifier.
-
-    Architecture:
-        Linear(input_dim → hidden_dim) + ReLU    ← input projection
-        × N_BLOCKS: ResBlock(hidden_dim)          ← residual feature extraction
-        Linear(hidden_dim → 128) + ReLU          ← compression
-        Linear(128 → 1)                           ← raw logit output
+    Encoder path compresses the input through four stages, saving feature
+    maps (h1–h4) at each level. The decoder expands the bottleneck representation,
+    concatenating the matching encoder feature map at each stage (skip connections).
+    Skip connections preserve spatial/feature detail lost during compression and
+    give the classifier access to both high-level (compressed) and low-level
+    (detailed) representations simultaneously.
 
     Input:  normalised load profile, shape [batch, 20]
     Output: raw logit, shape [batch, 1]
     """
-    def __init__(self, input_dim, hidden_dim, n_blocks):
+    def __init__(self, input_dim):
         super().__init__()
-        # Input projection to hidden dimension
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
 
-        # Stack of residual blocks
-        self.res_blocks = nn.ModuleList(
-            [ResBlock(hidden_dim) for _ in range(n_blocks)]
-        )
+        # Encoder
+        self.enc1 = enc_block(input_dim, 256)   # 20  → 256, saves h1
+        self.enc2 = enc_block(256, 128)          # 256 → 128, saves h2
+        self.enc3 = enc_block(128, 64)           # 128 → 64,  saves h3
+        self.enc4 = enc_block(64, 32)            # 64  → 32   [bottleneck, h4]
+
+        # Decoder
+        # Each decoder stage concatenates the bottleneck/previous decoder output
+        # with the matching encoder skip feature, doubling the input dimension.
+        self.dec4 = enc_block(32 + 64, 64)      # concat(h4[32], h3[64]) → 64
+        self.dec3 = enc_block(64 + 128, 128)    # concat(dec4[64], h2[128]) → 128
+        self.dec2 = enc_block(128 + 256, 256)   # concat(dec3[128], h1[256]) → 256
 
         # Classifier head
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim, 128),
+        self.head = nn.Sequential(
+            nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Linear(128, 1)
+            nn.Linear(128, 1)    # Raw logit output
         )
 
     def forward(self, x):
-        x = F.relu(self.input_proj(x))   # Project to hidden dimension
-        for block in self.res_blocks:
-            x = block(x)                 # Pass through residual blocks
-        return self.classifier(x)        # Final classification logit
+        # Encoder — save intermediate features for skip connections
+        h1 = self.enc1(x)    # [batch, 256]
+        h2 = self.enc2(h1)   # [batch, 128]
+        h3 = self.enc3(h2)   # [batch, 64]
+        h4 = self.enc4(h3)   # [batch, 32]  ← bottleneck
+
+        # Decoder — concatenate skip connections from encoder
+        d4 = self.dec4(torch.cat([h4, h3], dim=1))   # concat(32+64) → 64
+        d3 = self.dec3(torch.cat([d4, h2], dim=1))   # concat(64+128) → 128
+        d2 = self.dec2(torch.cat([d3, h1], dim=1))   # concat(128+256) → 256
+
+        return self.head(d2)   # Final classification logit
 
 
 # Data processing
@@ -202,12 +208,12 @@ train_loader = Data.DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
 
 
 # Model, optimiser, scheduler
-net       = ResNet_Classifier(input_dim, HIDDEN_DIM, N_BLOCKS)
+net       = UNet_Classifier(input_dim)
 optimizer = torch.optim.Adam(net.parameters(), lr=LR)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
 n_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
-print(f"\nResNet Classifier — Number of trainable parameters: {n_params:,}")
+print(f"\nU-Net Classifier — Number of trainable parameters: {n_params:,}")
 
 
 # Training loop
@@ -278,18 +284,20 @@ plt.plot(loss_train_list, label='Train loss', color='steelblue')
 plt.plot(loss_test_list,  label='Test loss',  color='tomato', linestyle='--')
 plt.xlabel('Epoch')
 plt.ylabel('BCE Loss')
-plt.title('Problem 2 ResNet — Training and Test Loss vs Epochs')
+plt.title('U-Net — Training and Test Loss vs Epochs')
 plt.legend()
 plt.tight_layout()
-plt.savefig('outputs/Problem2_ResNet_loss.png', dpi=150)
-print('\nSaved: outputs/Problem2_ResNet_loss.png')
+plt.savefig('outputs/unet_loss.png', dpi=150)
+print('\nSaved: outputs/unet_loss.png')
 
 
 # Summary
 print("\n" + "="*60)
-print("SUMMARY — Problem 2: ResNet Classifier")
+print("SUMMARY — U-Net Classifier")
 print("="*60)
-print(f"Architecture : ResNet ({N_BLOCKS} residual blocks, hidden_dim={HIDDEN_DIM})")
+print(f"Architecture : U-Net-style (encoder-decoder with skip connections)")
+print(f"Encoder dims : 20 → 256 → 128 → 64 → 32 (bottleneck)")
+print(f"Decoder dims : 32+64→64 → 64+128→128 → 128+256→256")
 print(f"Parameters   : {n_params:,}")
 print(f"Test Accuracy: {accuracy * 100:.2f}%")
 print(f"Precision    : {precision * 100:.2f}%")

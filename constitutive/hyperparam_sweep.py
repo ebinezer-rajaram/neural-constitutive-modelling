@@ -1,11 +1,10 @@
 """
-Hyperparameter sweep for Problem 1 — Materials A, B, C
-Cambridge IIB Engineering — Module 4C11
+Hyperparameter sweep for the neural constitutive models — Materials A, B, C
 
 Trains each configuration for SWEEP_EPOCHS epochs and records final
 train/test loss. Prints a comparison table and saves loss curve plots.
 
-Run from the problem1/ directory:
+Run from the constitutive/ directory:
     python hyperparam_sweep.py
 """
 

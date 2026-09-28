@@ -1,6 +1,5 @@
 """
-Problem 2 (b) — Eiffel Tower: Plot Original and Deformed Structures
-Cambridge IIB Engineering — Module 4C11
+Eiffel Tower: Plot Original and Deformed Structures
 
 Loads two samples from Eiffel_data.mat, re-solves the finite element problem
 (2D truss) for each sample's load profile, and plots:
@@ -428,5 +427,5 @@ for ax, idx, title in zip(axes, sample_indices, sample_titles):
 
 plt.suptitle("Eiffel Tower — Original and Deformed Structures", fontsize=13)
 plt.tight_layout()
-plt.savefig('outputs/Problem2_structures.png', dpi=150)
-print("\nSaved: outputs/Problem2_structures.png")
+plt.savefig('outputs/eiffel_structures.png', dpi=150)
+print("\nSaved: outputs/eiffel_structures.png")
