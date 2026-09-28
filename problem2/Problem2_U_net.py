@@ -1,6 +1,6 @@
 """
 Problem 2 — Eiffel Tower Structural Certification: U-Net-style Classifier
-Cambridge IIB Engineering — Module 4C11, Coursework 1
+Cambridge IIB Engineering — Module 4C11
 
 Binary classification task: predict whether the Eiffel Tower truss structure
 survives (output=1) or fails (output=0) under a given distributed pressure loading.

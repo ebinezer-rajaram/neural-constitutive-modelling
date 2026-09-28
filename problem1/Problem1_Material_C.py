@@ -1,6 +1,6 @@
 """
 Problem 1 — Material C: Neural Constitutive Model (Uniaxial)
-Cambridge IIB Engineering — Module 4C11, Coursework 1
+Cambridge IIB Engineering — Module 4C11
 
 Trains a feedforward ResNet to learn the constitutive law for Material C.
 Material C is a 1D uniaxial material with a single stress/strain component:

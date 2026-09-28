@@ -1,6 +1,6 @@
 """
 Probing Experiments -- Problem 1, Materials A, B, C
-Cambridge IIB Engineering 4C11 Coursework 1
+Cambridge IIB Engineering — Module 4C11
 
 Trains each neural constitutive model (same hyperparameters as individual scripts)
 and probes the trained network with controlled, synthetic loading paths to identify
